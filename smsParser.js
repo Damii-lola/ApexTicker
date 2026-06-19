@@ -1,60 +1,55 @@
-function extractAmounts(text) {
-  const regex = /(?:₦|NGN|N)\s?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)/gi;
-  const matches = [];
+function splitIntoMessages(text) {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  const anchorRegex = /\b(debit|credit)\b/gi;
+  const anchors = [];
   let match;
-  while ((match = regex.exec(text)) !== null) {
-    const numeric = parseFloat(match[1].replace(/,/g, ''));
-    if (!isNaN(numeric)) {
-      matches.push({
-        value: numeric,
-        contextBefore: text.slice(Math.max(0, match.index - 25), match.index).toLowerCase(),
-      });
-    }
+  while ((match = anchorRegex.exec(normalized)) !== null) {
+    anchors.push({ index: match.index, direction: match[1].toLowerCase() });
   }
-  return matches;
+  if (!anchors.length) return [];
+  const segments = [];
+  for (let i = 0; i < anchors.length; i++) {
+    const start = anchors[i].index;
+    const end = i + 1 < anchors.length ? anchors[i + 1].index : normalized.length;
+    segments.push({ direction: anchors[i].direction, text: normalized.slice(start, end) });
+  }
+  return segments;
 }
 
-function classifyDirection(text) {
-  const lower = text.toLowerCase();
-  const creditWords = ['credited', 'received', 'deposit', 'inflow', 'paid in'];
-  const debitWords = ['debited', 'withdraw', 'purchase', 'spent', 'paid out', 'sent'];
+function parseAmountFromLabel(text, labelRegex) {
+  const match = text.match(labelRegex);
+  if (!match) return null;
+  const numeric = parseFloat(match[1].replace(/,/g, ''));
+  return isNaN(numeric) ? null : numeric;
+}
 
-  const creditHits = creditWords.filter((w) => lower.includes(w));
-  const debitHits = debitWords.filter((w) => lower.includes(w));
-
-  if (creditHits.length && !debitHits.length) return 'income';
-  if (debitHits.length && !creditHits.length) return 'expense';
-  if (creditHits.length && debitHits.length) {
-    const creditPos = Math.min(...creditHits.map((w) => lower.indexOf(w)));
-    const debitPos = Math.min(...debitHits.map((w) => lower.indexOf(w)));
-    return creditPos < debitPos ? 'income' : 'expense';
-  }
-  return null;
+function parseSegment(segment) {
+  const amount = parseAmountFromLabel(segment.text, /amt[:\s]*[₦n]?\s?(\d[\d,]*\.?\d{0,2})/i);
+  const balanceMentioned = parseAmountFromLabel(
+    segment.text,
+    /(?:avail\s*bal|available\s*balance|balance|bal)[:\s]*[₦n]?\s?(\d[\d,]*\.?\d{0,2})/i
+  );
+  const type = segment.direction === 'credit' ? 'income' : segment.direction === 'debit' ? 'expense' : null;
+  return { amount, type, balanceMentioned };
 }
 
 function parseTransactionFromText(rawText) {
-  const text = rawText.replace(/\s+/g, ' ').trim();
-  const amounts = extractAmounts(text);
-  const balanceFlags = ['bal', 'balance', 'avail'];
-
-  const transactionAmounts = amounts.filter(
-    (a) => !balanceFlags.some((flag) => a.contextBefore.includes(flag))
-  );
-  const balanceAmounts = amounts.filter((a) =>
-    balanceFlags.some((flag) => a.contextBefore.includes(flag))
-  );
-
-  const direction = classifyDirection(text);
-  const primary = transactionAmounts[0] || amounts[0] || null;
-  const balanceMentioned = balanceAmounts.length
-    ? balanceAmounts[balanceAmounts.length - 1].value
-    : null;
-
+  const segments = splitIntoMessages(rawText);
+  if (!segments.length) {
+    return { amount: null, type: null, balanceMentioned: null, confidence: 'low', rawText };
+  }
+  // Bottom-most segment in a chat-style screenshot = the most recent message
+  const latestSegment = segments[segments.length - 1];
+  const parsed = parseSegment(latestSegment);
   return {
-    amount: primary ? primary.value : null,
-    type: direction,
-    balanceMentioned,
-    confidence: primary && direction ? 'high' : primary || direction ? 'medium' : 'low',
+    ...parsed,
+    confidence:
+      parsed.amount !== null && parsed.type !== null
+        ? 'high'
+        : parsed.amount !== null || parsed.type !== null
+        ? 'medium'
+        : 'low',
+    rawText,
   };
 }
 
