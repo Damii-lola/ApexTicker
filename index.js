@@ -98,5 +98,34 @@ app.get('/api/balance', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
+// Save user's country + currency (single-row settings)
+app.post('/api/settings', async (req, res) => {
+  try {
+    const { country, currencyCode, currencySymbol } = req.body;
+    if (!country || !currencyCode || !currencySymbol) {
+      return res.status(400).json({ error: 'country, currencyCode, and currencySymbol are required.' });
+    }
+    const { data, error } = await supabase
+      .from('user_settings')
+      .upsert({ id: 1, country, currency_code: currencyCode, currency_symbol: currencySymbol, updated_at: new Date().toISOString() })
+      .select()
+      .single();
+    if (error) throw error;
+    return res.json(data);
+  } catch (err) {
+    console.error('Settings save error:', err);
+    return res.status(500).json({ error: 'Failed to save settings.' });
+  }
+});
+
+app.get('/api/settings', async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('user_settings').select('*').eq('id', 1).maybeSingle();
+    if (error) throw error;
+    return res.json(data || null);
+  } catch (err) {
+    console.error('Settings fetch error:', err);
+    return res.status(500).json({ error: 'Failed to fetch settings.' });
+  }
+});const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`ApexTicker backend running on port ${PORT}`));
