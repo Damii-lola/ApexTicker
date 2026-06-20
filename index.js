@@ -129,3 +129,20 @@ app.get('/api/settings', async (req, res) => {
   }
 });const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`ApexTicker backend running on port ${PORT}`));
+
+// Saves a format sample for parser tuning — never touches the balance
+app.post('/api/sms-format-sample', async (req, res) => {
+  try {
+    const { amount, type, rawText } = req.body;
+    const { data, error } = await supabase
+      .from('sms_format_samples')
+      .insert({ amount: amount ?? null, type: type ?? null, raw_text: rawText ?? null })
+      .select()
+      .single();
+    if (error) throw error;
+    return res.json(data);
+  } catch (err) {
+    console.error('Format sample save error:', err);
+    return res.status(500).json({ error: 'Failed to save sample.' });
+  }
+});
