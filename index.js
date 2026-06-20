@@ -207,6 +207,36 @@ app.get('/api/settings', async (req, res) => {
   }
 });
 
+app.post('/api/calibrate-sync', async (req, res) => {
+  try {
+    const { id, type, amount, source, rawText, balanceAfter, createdAt } = req.body;
+    if (!id || typeof amount !== 'number' || typeof balanceAfter !== 'number') {
+      return res.status(400).json({ error: 'id, amount (number), and balanceAfter (number) are required.' });
+    }
+    const { data, error } = await supabase
+      .from('transactions')
+      .upsert(
+        {
+          id,
+          type: type || 'calibration',
+          amount,
+          source: source || 'manual_calibration',
+          raw_text: rawText || null,
+          balance_after: balanceAfter,
+          created_at: createdAt || new Date().toISOString(),
+        },
+        { onConflict: 'id' }
+      )
+      .select()
+      .single();
+    if (error) throw error;
+    return res.json(data);
+  } catch (err) {
+    console.error('Calibration sync error:', err);
+    return res.status(500).json({ error: 'Failed to sync calibration entry.' });
+  }
+});
+
 // ── Onboarding: saves a parsed screenshot as a format sample — never touches the balance
 app.post('/api/sms-format-sample', async (req, res) => {
   try {
