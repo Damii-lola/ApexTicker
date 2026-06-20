@@ -2,9 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const Tesseract = require('tesseract.js');
 const { createClient } = require('@supabase/supabase-js');
-const { parseTransactionFromText } = require('./smsParser');
 
 const app = express();
 app.use(cors());
@@ -25,19 +23,99 @@ async function getCurrentBalance() {
   return (data || []).reduce((sum, row) => sum + Number(row.amount), 0);
 }
 
-// ── OCR: extract + parse text from a screenshot — preview only, nothing saved yet
+const SMS_VISION_PROMPT = `You are reading a screenshot of a bank or fintech SMS conversation thread on a phone. The thread may contain multiple stacked messages. Identify ONLY the bottom-most (most recent) message in the thread — ignore older messages above it.
+
+From that single message, extract:
+- "senderName": the name shown at the very top of the conversation thread (the contact/sender the SMS is from). Read it exactly as displayed, even if stylized.
+- "type": "credit" if the message says Credit/Received/Deposit, "debit" if it says Debit/Withdrawal/Purchase. null if unclear.
+- "amount": the numeric transaction amount from the "Amt" line, as a plain number with no currency symbol or commas. null if not present.
+- "date": the date from the "Date" line, in whatever format it appears (e.g. "19/06/2026"). null if not present.
+- "time": the message timestamp shown next to that message bubble (e.g. "13:39"). null if not present.
+- "matchedText": the exact text of just that bottom-most message, as best you can transcribe it.
+
+Respond with ONLY a JSON object with these exact keys: senderName, type, amount, date, time, matchedText. No markdown, no explanation, no code fences.`;
+
+async function callMistralVision(base64Image) {
+  const apiKey = process.env.MISTRAL_API_KEY;
+  if (!apiKey) {
+    throw new Error('MISTRAL_API_KEY is not set on the server.');
+  }
+  const model = process.env.MISTRAL_VISION_MODEL || 'pixtral-large-latest';
+
+  const response = await fetch('https://api.mistral.ai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: SMS_VISION_PROMPT },
+            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64Image}` } },
+          ],
+        },
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0,
+    }),
+  });
+
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => '');
+    throw new Error(`Mistral API returned ${response.status}: ${errBody.slice(0, 300)}`);
+  }
+
+  const data = await response.json();
+  const content = data?.choices?.[0]?.message?.content;
+  if (!content) {
+    throw new Error('Mistral API returned no content.');
+  }
+
+  try {
+    return JSON.parse(content);
+  } catch (e) {
+    throw new Error('Mistral API returned non-JSON content.');
+  }
+}
+
+// ── Vision-based extraction from a screenshot — preview only, nothing saved yet
 app.post('/api/ocr/parse-sms', upload.single('screenshot'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No screenshot uploaded. Field name must be "screenshot".' });
     }
-    const { data } = await Tesseract.recognize(req.file.buffer, 'eng');
-    const rawText = data.text || '';
-    const parsed = parseTransactionFromText(rawText);
-    return res.json(parsed);
+
+    const base64Image = req.file.buffer.toString('base64');
+    const aiResult = await callMistralVision(base64Image);
+
+    const rawAmount =
+      typeof aiResult.amount === 'number'
+        ? aiResult.amount
+        : parseFloat(String(aiResult.amount ?? '').replace(/,/g, ''));
+    const amount = isNaN(rawAmount) ? null : rawAmount;
+
+    const type = aiResult.type === 'credit' ? 'income' : aiResult.type === 'debit' ? 'expense' : null;
+    const bankName = aiResult.senderName || null;
+    const date = aiResult.date || null;
+    const time = aiResult.time || null;
+    const rawText = aiResult.matchedText || null;
+
+    const missingFields = [];
+    if (!type) missingFields.push('type');
+    if (amount === null) missingFields.push('amount');
+    if (!date) missingFields.push('date');
+
+    const confidence =
+      missingFields.length === 0 ? 'high' : missingFields.length === 1 ? 'medium' : 'low';
+
+    return res.json({ amount, type, date, time, bankName, confidence, missingFields, rawText });
   } catch (err) {
-    console.error('OCR error:', err);
-    return res.status(500).json({ error: 'Failed to process screenshot.' });
+    console.error('OCR error:', err.message);
+    return res.status(500).json({ error: `Failed to process screenshot: ${err.message}` });
   }
 });
 
