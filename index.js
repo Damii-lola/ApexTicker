@@ -25,7 +25,7 @@ async function getCurrentBalance() {
   return (data || []).reduce((sum, row) => sum + Number(row.amount), 0);
 }
 
-// Extract + parse text from screenshot — preview only, nothing saved yet
+// ── OCR: extract + parse text from a screenshot — preview only, nothing saved yet
 app.post('/api/ocr/parse-sms', upload.single('screenshot'), async (req, res) => {
   try {
     if (!req.file) {
@@ -34,14 +34,14 @@ app.post('/api/ocr/parse-sms', upload.single('screenshot'), async (req, res) => 
     const { data } = await Tesseract.recognize(req.file.buffer, 'eng');
     const rawText = data.text || '';
     const parsed = parseTransactionFromText(rawText);
-    return res.json({ rawText, ...parsed });
+    return res.json(parsed);
   } catch (err) {
     console.error('OCR error:', err);
     return res.status(500).json({ error: 'Failed to process screenshot.' });
   }
 });
 
-// User confirms (or edits) the parsed transaction → this is what actually saves it
+// ── Save a confirmed real transaction (day-to-day use, not onboarding)
 app.post('/api/transactions/confirm', async (req, res) => {
   try {
     const { amount, type, source, rawText } = req.body;
@@ -65,7 +65,7 @@ app.post('/api/transactions/confirm', async (req, res) => {
   }
 });
 
-// User types real balance → system logs the delta as a calibration entry
+// ── Onboarding: user types real balance → log the delta as a calibration entry
 app.post('/api/calibrate', async (req, res) => {
   try {
     const { balance } = req.body;
@@ -98,7 +98,7 @@ app.get('/api/balance', async (req, res) => {
   }
 });
 
-// Save user's country + currency (single-row settings)
+// ── Country + currency settings (single-row)
 app.post('/api/settings', async (req, res) => {
   try {
     const { country, currencyCode, currencySymbol } = req.body;
@@ -127,16 +127,22 @@ app.get('/api/settings', async (req, res) => {
     console.error('Settings fetch error:', err);
     return res.status(500).json({ error: 'Failed to fetch settings.' });
   }
-});const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`ApexTicker backend running on port ${PORT}`));
+});
 
-// Saves a format sample for parser tuning — never touches the balance
+// ── Onboarding: saves a parsed screenshot as a format sample — never touches the balance
 app.post('/api/sms-format-sample', async (req, res) => {
   try {
-    const { amount, type, rawText } = req.body;
+    const { amount, type, bankName, transactionDate, transactionTime, rawText } = req.body;
     const { data, error } = await supabase
       .from('sms_format_samples')
-      .insert({ amount: amount ?? null, type: type ?? null, raw_text: rawText ?? null })
+      .insert({
+        amount: amount ?? null,
+        type: type ?? null,
+        bank_name: bankName ?? null,
+        transaction_date: transactionDate ?? null,
+        transaction_time: transactionTime ?? null,
+        raw_text: rawText ?? null,
+      })
       .select()
       .single();
     if (error) throw error;
@@ -146,3 +152,6 @@ app.post('/api/sms-format-sample', async (req, res) => {
     return res.status(500).json({ error: 'Failed to save sample.' });
   }
 });
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`ApexTicker backend running on port ${PORT}`));
